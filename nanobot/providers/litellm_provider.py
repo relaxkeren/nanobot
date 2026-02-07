@@ -1,5 +1,7 @@
 """LiteLLM provider implementation for multi-provider support."""
 
+import json
+import logging
 import os
 from typing import Any
 
@@ -7,6 +9,20 @@ import litellm
 from litellm import acompletion
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+
+logger = logging.getLogger(__name__)
+
+
+def print_kwargs(kwargs: dict[str, Any]) -> None:
+    """Log kwargs as key:value per line; use multi-line format when value is long or contains newline."""
+    print(json.dumps(kwargs, indent=2, default=str))
+    # for key, value in kwargs.items():
+    #     val_str = str(value)
+    #     if len(val_str) > 20 or "\n" in val_str:
+    #         logger.info("%s:", key)
+    #         logger.info("%s", value)
+    #     else:
+    #         logger.info("%s:%s", key, value)
 
 
 class LiteLLMProvider(LLMProvider):
@@ -146,6 +162,7 @@ class LiteLLMProvider(LLMProvider):
             kwargs["tool_choice"] = "auto"
         
         try:
+            print_kwargs(kwargs)
             response = await acompletion(**kwargs)
             return self._parse_response(response)
         except Exception as e:
