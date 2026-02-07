@@ -15,14 +15,8 @@ logger = logging.getLogger(__name__)
 
 def print_kwargs(kwargs: dict[str, Any]) -> None:
     """Log kwargs as key:value per line; use multi-line format when value is long or contains newline."""
+    # logger.info(json.dumps(kwargs, indent=2, default=str))
     print(json.dumps(kwargs, indent=2, default=str))
-    # for key, value in kwargs.items():
-    #     val_str = str(value)
-    #     if len(val_str) > 20 or "\n" in val_str:
-    #         logger.info("%s:", key)
-    #         logger.info("%s", value)
-    #     else:
-    #         logger.info("%s:%s", key, value)
 
 
 class LiteLLMProvider(LLMProvider):
@@ -48,8 +42,12 @@ class LiteLLMProvider(LLMProvider):
             (api_base and "openrouter" in api_base)
         )
         
-        # Track if using custom endpoint (vLLM, etc.)
-        self.is_vllm = bool(api_base) and not self.is_openrouter
+        # Only use vLLM path when model name indicates vLLM (avoid treating Moonshot/DashScope custom api_base as vLLM)
+        self.is_vllm = (
+            bool(api_base)
+            and not self.is_openrouter
+            and "vllm" in (default_model or "").lower()
+        )
         
         # Configure LiteLLM based on provider
         if api_key:
@@ -75,7 +73,7 @@ class LiteLLMProvider(LLMProvider):
                 os.environ.setdefault("GROQ_API_KEY", api_key)
             elif "moonshot" in default_model or "kimi" in default_model:
                 os.environ.setdefault("MOONSHOT_API_KEY", api_key)
-                os.environ.setdefault("MOONSHOT_API_BASE", api_base or "https://api.moonshot.cn/v1")
+                os.environ.setdefault("MOONSHOT_API_BASE", api_base or "https://api.moonshot.ai/v1")
         
         if api_base:
             litellm.api_base = api_base

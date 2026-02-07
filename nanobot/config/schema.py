@@ -177,6 +177,8 @@ class Config(BaseSettings):
             return self.providers.zhipu.api_base
         if "vllm" in model:
             return self.providers.vllm.api_base
+        if any(k in model for k in ("moonshot", "kimi")):
+            return self.providers.moonshot.api_base or "https://api.moonshot.ai/v1"
         return None
     
     class Config:
