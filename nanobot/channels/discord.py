@@ -40,6 +40,7 @@ class DiscordChannel(BaseChannel):
             return
 
         self._running = True
+        self._user_id = None
         self._http = httpx.AsyncClient(timeout=30.0)
 
         while self._running:
@@ -134,6 +135,9 @@ class DiscordChannel(BaseChannel):
                 await self._identify()
             elif op == 0 and event_type == "READY":
                 logger.info("Discord gateway READY")
+                if user := payload.get("user"):
+                    self._user_id = user.get("id")
+                    logger.info(f"Discord bot user ID: {self._user_id}")
             elif op == 0 and event_type == "MESSAGE_CREATE":
                 await self._handle_message_create(payload)
             elif op == 7:
@@ -195,6 +199,19 @@ class DiscordChannel(BaseChannel):
             return
 
         if not self.is_allowed(sender_id):
+            return
+
+        # Check for mentions if we know our user ID
+        is_mentioned = False
+        if self._user_id:
+            mentions = payload.get("mentions", [])
+            for mention in mentions:
+                if mention.get("id") == self._user_id:
+                    is_mentioned = True
+                    break
+        
+        # If we are not mentioned, ignore
+        if not is_mentioned:
             return
 
         content_parts = [content] if content else []

@@ -201,11 +201,17 @@ class LiteLLMProvider(LLMProvider):
                 "total_tokens": response.usage.total_tokens,
             }
         
+        # Extract reasoning content if present (common in thinking models like Moonshot)
+        reasoning_content = getattr(message, "reasoning_content", None)
+        if not reasoning_content and hasattr(message, "provider_specific_fields"):
+             reasoning_content = message.provider_specific_fields.get("reasoning_content")
+
         return LLMResponse(
             content=message.content,
             tool_calls=tool_calls,
             finish_reason=choice.finish_reason or "stop",
             usage=usage,
+            reasoning_content=reasoning_content,
         )
     
     def get_default_model(self) -> str:
