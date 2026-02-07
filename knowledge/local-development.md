@@ -49,6 +49,32 @@ This creates:
 
 Then edit `~/.nanobot/config.json` and add at least one provider API key (example: `providers.openrouter.apiKey`), and optionally set `agents.defaults.model`.
 
+### `providers.*.apiBase` (what it is)
+
+In `~/.nanobot/config.json`, each provider has:
+
+- `apiKey`: the credential for that provider
+- `apiBase`: the **base URL (endpoint root)** for the provider’s API (usually leave as `null`)
+
+If `apiBase` is `null`, nanobot uses the provider’s default base URL via its provider adapter. Set `apiBase` **only** if you want to route requests through:
+
+- a proxy / gateway,
+- a self-hosted OpenAI-compatible server (e.g. vLLM),
+- or a non-default endpoint.
+
+Example (vLLM / local OpenAI-compatible server):
+
+```json
+{
+  "providers": {
+    "vllm": {
+      "apiKey": "dummy",
+      "apiBase": "http://localhost:8000/v1"
+    }
+  }
+}
+```
+
 ### (Optional) Use a repo-local workspace during development
 
 By default, nanobot uses `~/.nanobot/workspace`. If you want an isolated workspace per checkout, set:
@@ -99,7 +125,48 @@ Start the gateway:
 nanobot gateway
 ```
 
-Then enable/configure channels in `~/.nanobot/config.json` (Telegram/Discord/WhatsApp/Feishu), as described in `README.md`.
+The gateway is what connects nanobot to chat “channels” (Telegram/Discord/WhatsApp/Feishu). If you want to communicate with nanobot via Discord, you generally **need `nanobot gateway` running**.
+
+Then enable/configure channels in `~/.nanobot/config.json`, as described in `README.md`.
+
+#### Discord quickstart (minimal config)
+
+1) Put your Discord bot token in:
+
+- `channels.discord.token` (this is the **Discord bot token** from the Discord Developer Portal)
+
+2) Enable the channel:
+
+- `channels.discord.enabled: true`
+
+3) (Recommended) Restrict who can talk to the bot:
+
+- `channels.discord.allowFrom: ["YOUR_USER_ID"]`
+  - `allowFrom` is an **allow-list (whitelist)** of Discord user IDs
+  - `[]` (empty) means **allow everyone**
+
+Example:
+
+```json
+{
+  "channels": {
+    "discord": {
+      "enabled": true,
+      "token": "YOUR_DISCORD_BOT_TOKEN",
+      "allowFrom": ["YOUR_USER_ID"]
+    }
+  }
+}
+```
+
+Also ensure you have at least one LLM provider API key configured (otherwise the gateway will exit with “No API key configured”).
+
+#### Sanity checks
+
+```bash
+nanobot channels status
+nanobot status
+```
 
 ## WhatsApp development notes (bridge)
 
