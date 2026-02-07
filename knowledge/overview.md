@@ -82,9 +82,11 @@ What you’ll learn here: how to run nanobot as a “gateway” connected to mes
 
 ### Providers_and_models
 
-What you’ll learn here: how providers are described (OpenRouter, Anthropic, OpenAI, DeepSeek, Groq, Gemini, vLLM) and how local-model usage via vLLM is configured. (source: README.md#-local-models-vllm, README.md#providers)
+What you’ll learn here: how providers are described (OpenRouter, Anthropic, OpenAI, DeepSeek, Groq, Gemini, Moonshot/Kimi, vLLM) and how local-model usage via vLLM is configured. (source: README.md#-local-models-vllm, README.md#providers)
 
 - [`README.md`](../README.md) (providers table + vLLM instructions) (source: README.md#providers)
+- [`knowledge/setup-agent.md`](setup-agent.md) — Agent setup: config location, `agents.defaults`, provider selection, and examples (Moonshot, Anthropic, OpenRouter, etc.).
+- [`knowledge/ai-model-setup.md`](ai-model-setup.md) — How nanobot chooses the LLM provider, LiteLLM conventions, and detailed provider notes.
 
 ### Runtime_and_operations
 
