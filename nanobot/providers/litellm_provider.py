@@ -3,6 +3,8 @@
 import json
 import logging
 import os
+import re
+import uuid
 from typing import Any
 
 import litellm
@@ -19,10 +21,85 @@ def print_kwargs(kwargs: dict[str, Any]) -> None:
     print(json.dumps(kwargs, indent=2, default=str))
 
 
+def _extract_tool_calls_from_content(content: str | None) -> tuple[str, list[ToolCallRequest]]:
+    """
+    Fallback: when the server returns tool calls as raw text in content (e.g. Qwen3
+    with a format vLLM's parser didn't recognize), extract them and strip
+    thinking/tool_call blocks from the visible content.
+
+    Looks for <tool_call>{"name": "...", "arguments": {...}}</tool_call> and
+    strips <think>...</think> blocks so they are not shown to the user.
+    """
+    if not content or not content.strip():
+        return content or "", []
+
+    tool_calls: list[ToolCallRequest] = []
+    # Match <tool_call>...</tool_call> and extract JSON (brace-balanced so nested {} work)
+    tool_call_start = re.compile(r"<tool_call>\s*", re.IGNORECASE)
+    clean_parts = []
+    last_end = 0
+    pos = 0
+
+    while True:
+        m = tool_call_start.search(content, pos)
+        if not m:
+            break
+        start = m.end()
+        # Find matching closing </tool_call>
+        end_tag = content.find("</tool_call>", start)
+        if end_tag == -1:
+            break
+        json_str = content[start:end_tag].strip()
+        # Extract JSON object (brace-balanced)
+        if json_str.startswith("{"):
+            depth = 0
+            for i, c in enumerate(json_str):
+                if c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        json_str = json_str[: i + 1]
+                        break
+        before = content[last_end : m.start()]
+        before = re.sub(r"<think>.*?</think>", "", before, flags=re.DOTALL | re.IGNORECASE)
+        before = before.strip()
+        if before:
+            clean_parts.append(before)
+        try:
+            payload = json.loads(json_str)
+            name = payload.get("name") or payload.get("function", {}).get("name")
+            arguments = payload.get("arguments") or payload.get("function", {}).get("arguments", "{}")
+            if isinstance(arguments, str):
+                arguments = json.loads(arguments) if arguments.strip() else {}
+            if name:
+                tool_calls.append(
+                    ToolCallRequest(
+                        id=str(uuid.uuid4()),
+                        name=name,
+                        arguments=arguments,
+                    )
+                )
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.debug("Could not parse tool_call JSON from content: %s", e)
+        last_end = end_tag + len("</tool_call>")
+        pos = last_end
+
+    # Remainder after last match: strip <think>
+    after = content[last_end:]
+    after = re.sub(r"<think>.*?</think>", "", after, flags=re.DOTALL | re.IGNORECASE)
+    after = after.strip()
+    if after:
+        clean_parts.append(after)
+
+    cleaned = "\n\n".join(p for p in clean_parts if p).strip()
+    return cleaned, tool_calls
+
+
 class LiteLLMProvider(LLMProvider):
     """
     LLM provider using LiteLLM for multi-provider support.
-    
+
     Supports OpenRouter, Anthropic, OpenAI, Gemini, and many other providers through
     a unified interface.
     """
@@ -143,6 +220,7 @@ class LiteLLMProvider(LLMProvider):
 
         # For vLLM, use hosted_vllm/ prefix per LiteLLM docs
         # Convert openai/ prefix to hosted_vllm/ if user specified it
+        # Comment this out and replace it with local vLLM mode above
         # if self.is_vllm:
         #     model = f"hosted_vllm/{model}"
         
@@ -185,13 +263,14 @@ class LiteLLMProvider(LLMProvider):
         choice = response.choices[0]
         message = choice.message
         
-        tool_calls = []
+        tool_calls: list[ToolCallRequest] = []
+        content = message.content or ""
+        
         if hasattr(message, "tool_calls") and message.tool_calls:
             for tc in message.tool_calls:
                 # Parse arguments from JSON string if needed
                 args = tc.function.arguments
                 if isinstance(args, str):
-                    import json
                     try:
                         args = json.loads(args)
                     except json.JSONDecodeError:
@@ -203,6 +282,12 @@ class LiteLLMProvider(LLMProvider):
                     arguments=args,
                 ))
         
+        # Fallback: some backends (e.g. vLLM + Qwen3) return tool calls as raw text
+        # in content when their parser doesn't match the model's output format.
+        # To avoid changing behavior for non-vLLM providers, only enable this in vLLM mode.
+        if self.is_vllm and not tool_calls and content:
+            content, tool_calls = _extract_tool_calls_from_content(content)
+        
         usage = {}
         if hasattr(response, "usage") and response.usage:
             usage = {
@@ -211,17 +296,11 @@ class LiteLLMProvider(LLMProvider):
                 "total_tokens": response.usage.total_tokens,
             }
         
-        # Extract reasoning content if present (common in thinking models like Moonshot)
-        reasoning_content = getattr(message, "reasoning_content", None)
-        if not reasoning_content and hasattr(message, "provider_specific_fields"):
-             reasoning_content = message.provider_specific_fields.get("reasoning_content")
-
         return LLMResponse(
-            content=message.content,
+            content=content,
             tool_calls=tool_calls,
             finish_reason=choice.finish_reason or "stop",
             usage=usage,
-            reasoning_content=reasoning_content,
         )
     
     def get_default_model(self) -> str:
