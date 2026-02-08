@@ -122,7 +122,13 @@ class LiteLLMProvider(LLMProvider):
             model.startswith("dashscope/") or
             model.startswith("openrouter/")
         ):
-            model = f"dashscope/{model}"
+            if self.is_vllm:
+                # If the config uses `vllm/<model-id>` as a hint, strip it before routing.
+                if model.lower().startswith("vllm/"):
+                    model = model.split("/", 1)[1]
+                model = f"openai/{model}"
+            else:
+                model = f"dashscope/{model}"
 
         # For Moonshot/Kimi, ensure moonshot/ prefix (before vLLM check)
         if ("moonshot" in model.lower() or "kimi" in model.lower()) and not (
@@ -137,8 +143,8 @@ class LiteLLMProvider(LLMProvider):
 
         # For vLLM, use hosted_vllm/ prefix per LiteLLM docs
         # Convert openai/ prefix to hosted_vllm/ if user specified it
-        if self.is_vllm:
-            model = f"hosted_vllm/{model}"
+        # if self.is_vllm:
+        #     model = f"hosted_vllm/{model}"
         
         # kimi-k2.5 only supports temperature=1.0
         if "kimi-k2.5" in model.lower():
@@ -150,7 +156,11 @@ class LiteLLMProvider(LLMProvider):
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        
+
+        # OpenAI-compatible endpoints require a non-empty api_key; for local vLLM this can be any string.
+        if self.is_vllm and self.api_key:
+            kwargs["api_key"] = self.api_key
+
         # Pass api_base directly for custom endpoints (vLLM, etc.)
         if self.api_base:
             kwargs["api_base"] = self.api_base
