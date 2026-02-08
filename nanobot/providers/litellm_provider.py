@@ -12,13 +12,41 @@ from litellm import acompletion
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("nanobot.llm_debug")
 
 
-def print_kwargs(kwargs: dict[str, Any]) -> None:
-    """Log kwargs as key:value per line; use multi-line format when value is long or contains newline."""
-    # logger.info(json.dumps(kwargs, indent=2, default=str))
-    print(json.dumps(kwargs, indent=2, default=str))
+def _debug_llm_enabled() -> bool:
+    """Whether to emit verbose LLM request/response logs."""
+    return os.environ.get("NANOBOT_DEBUG_LLM", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _redact_secrets(obj: Any) -> Any:
+    """Best-effort redaction of common secret fields in nested structures."""
+    if isinstance(obj, dict):
+        redacted: dict[str, Any] = {}
+        for k, v in obj.items():
+            lk = str(k).lower()
+            if lk in {"api_key", "apikey", "authorization", "x-api-key", "x_subscription_token"}:
+                redacted[k] = "***REDACTED***"
+            else:
+                redacted[k] = _redact_secrets(v)
+        return redacted
+    if isinstance(obj, list):
+        return [_redact_secrets(x) for x in obj]
+    return obj
+
+
+def _debug_dump(label: str, payload: Any) -> None:
+    """Debug-print JSON payloads (redacted) when enabled."""
+    # if not _debug_llm_enabled():
+    #     return
+    try:
+        safe = _redact_secrets(payload)
+        text = f"[NANOBOT_DEBUG_LLM] {label}\n{json.dumps(safe, indent=2, default=str)}"
+        logger.info(text)
+    except Exception as e:
+        # Never fail the request due to logging
+        logger.debug("Failed to debug-dump %s: %s", label, e)
 
 
 def _extract_tool_calls_from_content(content: str | None) -> tuple[str, list[ToolCallRequest]]:
@@ -103,29 +131,29 @@ class LiteLLMProvider(LLMProvider):
     Supports OpenRouter, Anthropic, OpenAI, Gemini, and many other providers through
     a unified interface.
     """
-    
+
     def __init__(
-        self, 
-        api_key: str | None = None, 
+        self,
+        api_key: str | None = None,
         api_base: str | None = None,
         default_model: str = "anthropic/claude-opus-4-5"
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
-        
+
         # Detect OpenRouter by api_key prefix or explicit api_base
         self.is_openrouter = (
             (api_key and api_key.startswith("sk-or-")) or
             (api_base and "openrouter" in api_base)
         )
-        
+
         # Only use vLLM path when model name indicates vLLM (avoid treating Moonshot/DashScope custom api_base as vLLM)
         self.is_vllm = (
             bool(api_base)
             and not self.is_openrouter
             and "vllm" in (default_model or "").lower()
         )
-        
+
         # Configure LiteLLM based on provider
         if api_key:
             if self.is_openrouter:
@@ -151,13 +179,13 @@ class LiteLLMProvider(LLMProvider):
             elif "moonshot" in default_model or "kimi" in default_model:
                 os.environ.setdefault("MOONSHOT_API_KEY", api_key)
                 os.environ.setdefault("MOONSHOT_API_BASE", api_base or "https://api.moonshot.ai/v1")
-        
+
         if api_base:
             litellm.api_base = api_base
-        
+
         # Disable LiteLLM logging noise
         litellm.suppress_debug_info = True
-    
+
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -168,28 +196,28 @@ class LiteLLMProvider(LLMProvider):
     ) -> LLMResponse:
         """
         Send a chat completion request via LiteLLM.
-        
+
         Args:
             messages: List of message dicts with 'role' and 'content'.
             tools: Optional list of tool definitions in OpenAI format.
             model: Model identifier (e.g., 'anthropic/claude-sonnet-4-5').
             max_tokens: Maximum tokens in response.
             temperature: Sampling temperature.
-        
+
         Returns:
             LLMResponse with content and/or tool calls.
         """
         model = model or self.default_model
-        
+
         # For OpenRouter, prefix model name if not already prefixed
         if self.is_openrouter and not model.startswith("openrouter/"):
             model = f"openrouter/{model}"
-        
+
         # For Zhipu/Z.ai, ensure prefix is present
         # Handle cases like "glm-4.7-flash" -> "zai/glm-4.7-flash"
         if ("glm" in model.lower() or "zhipu" in model.lower()) and not (
-            model.startswith("zhipu/") or 
-            model.startswith("zai/") or 
+            model.startswith("zhipu/") or
+            model.startswith("zai/") or
             model.startswith("openrouter/")
         ):
             model = f"zai/{model}"
@@ -223,7 +251,7 @@ class LiteLLMProvider(LLMProvider):
         # Comment this out and replace it with local vLLM mode above
         # if self.is_vllm:
         #     model = f"hosted_vllm/{model}"
-        
+
         # kimi-k2.5 only supports temperature=1.0
         if "kimi-k2.5" in model.lower():
             temperature = 1.0
@@ -242,14 +270,29 @@ class LiteLLMProvider(LLMProvider):
         # Pass api_base directly for custom endpoints (vLLM, etc.)
         if self.api_base:
             kwargs["api_base"] = self.api_base
-        
+
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
-        
+
         try:
-            print_kwargs(kwargs)
+            _debug_dump("LLM request kwargs", kwargs)
             response = await acompletion(**kwargs)
+            # Dump a minimal "raw" view to diagnose tool-call parsing differences.
+            try:
+                choice = response.choices[0]
+                msg = choice.message
+                raw = {
+                    "finish_reason": getattr(choice, "finish_reason", None),
+                    "model": getattr(response, "model", None),
+                    "content": getattr(msg, "content", None),
+                    "has_tool_calls_attr": bool(getattr(msg, "tool_calls", None)),
+                    # tool_calls may be a rich object; stringify it so we can see shape without crashing
+                    "tool_calls_repr": repr(getattr(msg, "tool_calls", None))[:8000],
+                }
+                _debug_dump("LLM raw response (minimal)", raw)
+            except Exception as e:
+                logger.debug("Failed to capture minimal raw response: %s", e)
             return self._parse_response(response)
         except Exception as e:
             # Return error as content for graceful handling
@@ -257,15 +300,15 @@ class LiteLLMProvider(LLMProvider):
                 content=f"Error calling LLM: {str(e)}",
                 finish_reason="error",
             )
-    
+
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""
         choice = response.choices[0]
         message = choice.message
-        
+
         tool_calls: list[ToolCallRequest] = []
         content = message.content or ""
-        
+
         if hasattr(message, "tool_calls") and message.tool_calls:
             for tc in message.tool_calls:
                 # Parse arguments from JSON string if needed
@@ -276,19 +319,32 @@ class LiteLLMProvider(LLMProvider):
                         args = json.loads(args)
                     except json.JSONDecodeError:
                         args = {"raw": args}
-                
-                tool_calls.append(ToolCallRequest(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=args,
-                ))
-        
+
+                tool_calls.append(
+                    ToolCallRequest(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=args,
+                    )
+                )
+
         # Fallback: some backends (e.g. vLLM + Qwen3) return tool calls as raw text
         # in content when their parser doesn't match the model's output format.
         # To avoid changing behavior for non-vLLM providers, only enable this in vLLM mode.
         if self.is_vllm and not tool_calls and content:
+            before = content
             content, tool_calls = _extract_tool_calls_from_content(content)
-        
+            if _debug_llm_enabled():
+                _debug_dump(
+                    "vLLM tool_call fallback",
+                    {
+                        "content_had_tool_call_tag": "<tool_call" in (before or "").lower(),
+                        "extracted_tool_calls_count": len(tool_calls),
+                        "extracted_tool_names": [tc.name for tc in tool_calls],
+                        "content_preview": (content or "")[:2000],
+                    },
+                )
+
         usage = {}
         if hasattr(response, "usage") and response.usage:
             usage = {
@@ -296,11 +352,11 @@ class LiteLLMProvider(LLMProvider):
                 "completion_tokens": response.usage.completion_tokens,
                 "total_tokens": response.usage.total_tokens,
             }
-        
+
         # Extract reasoning content if present (common in thinking models like Moonshot)
         reasoning_content = getattr(message, "reasoning_content", None)
         if not reasoning_content and hasattr(message, "provider_specific_fields"):
-             reasoning_content = message.provider_specific_fields.get("reasoning_content")
+            reasoning_content = message.provider_specific_fields.get("reasoning_content")
 
         return LLMResponse(
             content=content,
@@ -309,7 +365,7 @@ class LiteLLMProvider(LLMProvider):
             usage=usage,
             reasoning_content=reasoning_content,
         )
-    
+
     def get_default_model(self) -> str:
         """Get the default model."""
         return self.default_model

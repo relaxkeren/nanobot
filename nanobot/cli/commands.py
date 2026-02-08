@@ -17,6 +17,59 @@ app = typer.Typer(
 
 console = Console()
 
+_LOGURU_FILE_SINK_ID: int | None = None
+
+
+def _configure_logging(verbose: bool) -> Path:
+    """Configure console logging + append all logs to ~/.nanobot/logs/nanobot.log."""
+    import logging
+
+    from nanobot.config.loader import get_data_dir
+
+    level = logging.DEBUG if verbose else logging.INFO
+
+    # Console logger (keep existing human-friendly format).
+    logging.basicConfig(
+        level=level,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+
+    # File appender (include timestamps).
+    log_dir = get_data_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "nanobot.log"
+
+    root = logging.getLogger()
+    file_formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if not any(
+        isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == str(log_path)
+        for h in root.handlers
+    ):
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setLevel(level)
+        fh.setFormatter(file_formatter)
+        root.addHandler(fh)
+
+    # Also attach loguru to the same file (agent loop uses loguru directly).
+    global _LOGURU_FILE_SINK_ID
+    try:
+        from loguru import logger as loguru_logger
+
+        if _LOGURU_FILE_SINK_ID is None:
+            _LOGURU_FILE_SINK_ID = loguru_logger.add(
+                str(log_path),
+                level="DEBUG" if verbose else "INFO",
+                enqueue=True,
+                backtrace=False,
+                diagnose=False,
+                format="{time:YYYY-MM-DD HH:mm:ss.SSS} {level} {name}: {message}",
+            )
+    except Exception:
+        # Never block startup due to file logging.
+        pass
+
+    return log_path
+
 
 def version_callback(value: bool):
     if value:
@@ -166,14 +219,11 @@ def gateway(
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
-    
-    import logging
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(levelname)s %(name)s: %(message)s",
-    )
-    
+
+    log_path = _configure_logging(verbose)
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
+    if verbose:
+        console.print(f"[dim]Logging to {log_path}[/dim]")
     
     config = load_config()
     
@@ -257,7 +307,7 @@ def gateway(
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
     
-    console.print(f"[green]✓[/green] Heartbeat: every 30m")
+    console.print("[green]✓[/green] Heartbeat: every 30m")
     
     async def run():
         try:
@@ -290,11 +340,7 @@ def agent(
     session_id: str = typer.Option("cli:default", "--session", "-s", help="Session ID"),
 ):
     """Interact with the agent directly."""
-    import logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(levelname)s %(name)s: %(message)s",
-    )
+    log_path = _configure_logging(verbose=False)
 
     from nanobot.config.loader import load_config
     from nanobot.bus.queue import MessageBus
@@ -338,6 +384,7 @@ def agent(
     else:
         # Interactive mode
         console.print(f"{__logo__} Interactive mode (Ctrl+C to exit)\n")
+        console.print(f"[dim]Logging to {log_path}[/dim]\n")
         
         async def run_interactive():
             while True:
@@ -631,7 +678,7 @@ def cron_run(
         return await service.run_job(job_id, force=force)
     
     if asyncio.run(run()):
-        console.print(f"[green]✓[/green] Job executed")
+        console.print("[green]✓[/green] Job executed")
     else:
         console.print(f"[red]Failed to run job {job_id}[/red]")
 
