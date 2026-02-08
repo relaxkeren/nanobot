@@ -100,9 +100,33 @@ class DiscordChannel(BaseChannel):
                         continue
                     response.raise_for_status()
                     return
+                except httpx.HTTPStatusError as e:
+                    # Only log raw content on final failure (can be large / sensitive).
+                    if attempt == 2:
+                        resp = e.response
+                        try:
+                            await resp.aread()
+                            resp_text = resp.text
+                        except Exception:
+                            resp_text = "<failed to read response body>"
+                        logger.error(
+                            "Error sending Discord message: "
+                            f"status={resp.status_code} url={resp.request.url!s} "
+                            f"response_body={resp_text!s}"
+                        )
+                        logger.error(
+                            "Discord outbound content follows (raw):\n"
+                            f"{msg.content}"
+                        )
+                    else:
+                        await asyncio.sleep(1)
                 except Exception as e:
                     if attempt == 2:
                         logger.error(f"Error sending Discord message: {e}")
+                        logger.error(
+                            "Discord outbound content follows (raw):\n"
+                            f"{msg.content}"
+                        )
                     else:
                         await asyncio.sleep(1)
         finally:
