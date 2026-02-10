@@ -61,7 +61,9 @@ class ChannelManager:
             try:
                 from nanobot.channels.discord import DiscordChannel
                 self.channels["discord"] = DiscordChannel(
-                    self.config.channels.discord, self.bus
+                    self.config.channels.discord, 
+                    self.bus,
+                    workspace_path=self.config.workspace_path
                 )
                 logger.info("Discord channel enabled")
             except ImportError as e:

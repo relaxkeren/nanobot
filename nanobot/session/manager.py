@@ -85,7 +85,35 @@ class SessionManager:
         Returns:
             The session.
         """
-        # Check cache
+        path = self._get_session_path(key)
+        
+        # Check if file exists - if session is cached but file is missing, it was deleted externally
+        if key in self._cache and not path.exists():
+            del self._cache[key]
+            
+        # Check if file is newer than cache (e.g. modified by another component)
+        if key in self._cache and path.exists():
+            try:
+                cached_session = self._cache[key]
+                # Read metadata line to check timestamp
+                with open(path) as f:
+                    first_line = f.readline().strip()
+                    if first_line:
+                        data = json.loads(first_line)
+                        if data.get("_type") == "metadata":
+                            disk_updated_at_str = data.get("updated_at")
+                            if disk_updated_at_str:
+                                disk_updated_at = datetime.fromisoformat(disk_updated_at_str)
+                                # Allow 1 second fuzziness for clock precision/filesystem
+                                if disk_updated_at > cached_session.updated_at:
+                                    # Disk is newer, invalidate cache
+                                    del self._cache[key]
+            except Exception:
+                # If cannot read file, assume cache is valid or just reload safely?
+                # Safer to just keep cache if file is broken/locked
+                pass
+
+        # Check cache again
         if key in self._cache:
             return self._cache[key]
         

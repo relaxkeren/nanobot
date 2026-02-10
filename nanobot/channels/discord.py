@@ -24,10 +24,22 @@ class DiscordChannel(BaseChannel):
 
     name = "discord"
 
-    def __init__(self, config: DiscordConfig, bus: MessageBus):
+    def __init__(self, config: DiscordConfig, bus: MessageBus, workspace_path: Path | None = None):
         super().__init__(config, bus)
         self.config: DiscordConfig = config
         self._ws: websockets.WebSocketClientProtocol | None = None
+        self.workspace_path = workspace_path
+        
+        # Initialize memory store and session manager if workspace provided
+        if workspace_path:
+            from nanobot.agent.memory import MemoryStore
+            from nanobot.session.manager import SessionManager
+            self.memory = MemoryStore(workspace_path)
+            self.sessions = SessionManager(workspace_path)
+        else:
+            self.memory = None
+            self.sessions = None
+
         self._seq: int | None = None
         self._heartbeat_task: asyncio.Task | None = None
         self._typing_tasks: dict[str, asyncio.Task] = {}
@@ -214,6 +226,80 @@ class DiscordChannel(BaseChannel):
         if not is_mentioned:
             return
 
+        # Check for admin commands
+        # Strip mention from start if present to handle "@Bot /command"
+        clean_content = content
+        if clean_content.startswith(("<@", "<@!")):
+            # Simple strip until space or end
+            parts = clean_content.split(" ", 1)
+            if len(parts) > 1:
+                clean_content = parts[1].strip()
+            else:
+                clean_content = ""
+
+        if clean_content.startswith(("/delete-last-memory", "/delete-all-memory")):
+             if not self.memory:
+                 await self._send_reply(channel_id, "Memory not initialized.", payload.get("id"))
+                 return
+
+             if clean_content.startswith("/delete-all-memory"):
+                 self.memory.write_long_term("")
+                 # Also clear session history
+                 if self.sessions:
+                     session_key = f"{self.name}:{channel_id}"
+                     self.sessions.delete(session_key)
+                 
+                 await self._send_reply(channel_id, "All long-term memory deleted and session history cleared.", payload.get("id"))
+                 return
+             
+             if clean_content.startswith("/delete-last-memory"):
+                 current = self.memory.read_long_term()
+                 if not current:
+                     await self._send_reply(channel_id, "Memory is already empty.", payload.get("id"))
+                     # Still clear session history for last interaction just in case
+                     if self.sessions:
+                        session_key = f"{self.name}:{channel_id}"
+                        session = self.sessions.get_or_create(session_key)
+                        if len(session.messages) >= 2:
+                            session.messages = session.messages[:-2]
+                            self.sessions.save(session)
+                     return
+                 
+                 lines = current.splitlines()
+                 # Remove last non-empty line
+                 while lines and not lines[-1].strip():
+                     lines.pop()
+                 if lines:
+                     lines.pop()
+                 
+                 new_content = "\n".join(lines)
+                 if new_content:
+                     new_content += "\n"
+                 
+                 self.memory.write_long_term(new_content)
+                 
+                 # Also remove last interaction from session history
+                 msg = "Last memory line deleted."
+                 if self.sessions:
+                     session_key = f"{self.name}:{channel_id}"
+                     session = self.sessions.get_or_create(session_key)
+                     # Remove last 2 messages (User + Assistant response)
+                     # But current user message hasn't been added yet because we return early!
+                     # So we just need to remove the PREVIOUS assistant response and PREVIOUS user message.
+                     # However, the user's current command message IS the current interaction.
+                     # If we just return here, the current message is NOT added to history.
+                     # So we just need to remove the *previous* interaction if that's what "last memory" implies.
+                     # "Delete last memory" usually means "undo last thing you learned".
+                     # If I just learned something in the previous turn, it's in history + memory.
+                     # So removing last 2 messages from history retrieves the state before that learning.
+                     if len(session.messages) >= 2:
+                         session.messages = session.messages[:-2]
+                         self.sessions.save(session)
+                         msg += " Session history rolled back one turn."
+                 
+                 await self._send_reply(channel_id, msg, payload.get("id"))
+                 return
+
         content_parts = [content] if content else []
         media_paths: list[str] = []
         media_dir = Path.home() / ".nanobot" / "media"
@@ -276,3 +362,21 @@ class DiscordChannel(BaseChannel):
         task = self._typing_tasks.pop(channel_id, None)
         if task:
             task.cancel()
+
+    async def _send_reply(self, channel_id: str, content: str, reply_to: str | None = None) -> None:
+        """Helper to send a direct reply."""
+        if not self._http:
+            return
+            
+        url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
+        payload = {"content": content}
+        
+        if reply_to:
+            payload["message_reference"] = {"message_id": reply_to}
+            payload["allowed_mentions"] = {"replied_user": False}
+            
+        headers = {"Authorization": f"Bot {self.config.token}"}
+        try:
+            await self._http.post(url, headers=headers, json=payload)
+        except Exception as e:
+            logger.error(f"Failed to send reply: {e}")
