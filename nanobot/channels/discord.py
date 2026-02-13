@@ -213,7 +213,8 @@ class DiscordChannel(BaseChannel):
         if not self.is_allowed(sender_id):
             return
 
-        # Check for mentions if we know our user ID
+        # In DMs (no guild_id), every message is for the bot. In guild channels, require @mention.
+        is_dm = payload.get("guild_id") is None
         is_mentioned = False
         if self._user_id:
             mentions = payload.get("mentions", [])
@@ -221,9 +222,7 @@ class DiscordChannel(BaseChannel):
                 if mention.get("id") == self._user_id:
                     is_mentioned = True
                     break
-        
-        # If we are not mentioned, ignore
-        if not is_mentioned:
+        if not is_dm and not is_mentioned:
             return
 
         # Check for admin commands
