@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 def print_kwargs(kwargs: dict[str, Any]) -> None:
     """Log kwargs as key:value per line; use multi-line format when value is long or contains newline."""
     # logger.info(json.dumps(kwargs, indent=2, default=str))
-    print(json.dumps(kwargs, indent=2, default=str))
+    logger.info("request kwargs:")
+    print(json.dumps(kwargs, indent=2, default=str)[:100])
 
 
 class LiteLLMProvider(LLMProvider):
